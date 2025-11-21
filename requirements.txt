@@ -1,0 +1,12 @@
+Flask
+Flask-SocketIO
+opencv-python
+mediapipe
+numpy
+pandas
+scikit-learn
+torch
+onnx
+onnxruntime
+gunicorn
+eventlet

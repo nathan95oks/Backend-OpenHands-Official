@@ -2,110 +2,80 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traductor de Lengua de Señas</title>
+    <title>Traductor de Lenguaje de Señas</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f2f5;
+            font-family: sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            background-color: white;
             padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
-        h1 {
-            color: #333;
-            margin-top: 0;
-        }
-        #video {
+        #video_container {
             border: 2px solid #ccc;
-            border-radius: 8px;
-            max-width: 100%;
-            height: auto;
+            margin-bottom: 20px;
+            width: 640px; /* Ancho de video común */
+            height: 480px; /* Alto de video común */
         }
-        .output-container {
-            width: 100%;
-            margin-top: 20px;
-        }
-        #translated-text {
-            width: calc(100% - 24px); /* Ajuste por padding */
-            min-height: 50px;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            background-color: #fafafa;
+        #output_text {
+            width: 630px;
+            min-height: 100px;
             font-size: 1.5em;
-            text-align: center;
-            color: #555;
-            word-wrap: break-word;
+            padding: 10px;
+            margin-top: 10px;
+            border: 2px solid #333;
+            resize: none;
         }
-        #clear-button {
-            margin-top: 15px;
+        button {
             padding: 10px 20px;
-            font-size: 1em;
-            color: white;
-            background-color: #dc3545; /* Color rojo */
-            border: none;
-            border-radius: 5px;
+            font-size: 1.2em;
+            margin-top: 10px;
             cursor: pointer;
-            transition: background-color 0.3s;
-        }
-        #clear-button:hover {
-            background-color: #c82333;
         }
     </style>
 </head>
 <body>
+    <h1>Traductor de Lenguaje de Señas</h1>
 
-    <div class="container">
-        <h1>Traductor de Señas en Tiempo Real</h1>
-        <img id="video" src="{{ url_for('video_feed') }}" width="640" height="480">
-        
-        <div class="output-container">
-            <div id="translated-text"></div>
-            <!-- ESTE ES EL NUEVO BOTÓN -->
-            <button id="clear-button">Borrar Texto</button>
-        </div>
+    <!-- Caja de Video (la imagen se actualiza constantemente desde /video_feed) -->
+    <div id="video_container">
+        <img src="{{ url_for('video_feed') }}" width="100%" height="100%">
     </div>
 
-    <!-- Librería de Socket.IO para la comunicación en tiempo real -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <h2>Frase Traducida</h2>
+
+    <!-- Caja de Texto (se actualiza por SocketIO) -->
+    <textarea id="output_text" rows="5" readonly placeholder="El texto traducido aparecerá aquí..."></textarea>
     
+    <!-- Botón para borrar el texto. Llama a la función JS clearText() -->
+    <button onclick="clearText()">Borrar Texto</button>
+
+    <!-- Script de Socket.IO y funciones del lado del cliente -->
+    <script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script>
     <script type="text/javascript">
-        // Conectarse al servidor de Socket.IO
         var socket = io();
+        var outputElement = document.getElementById('output_text');
 
-        // Obtener la referencia al cuadro de texto y al botón
-        const translatedTextDiv = document.getElementById('translated-text');
-        const clearButton = document.getElementById('clear-button');
-
-        // Escuchar el evento 'update_text' del servidor
-        socket.on('update_text', function(data) {
-            // Actualizar el contenido del div con el texto recibido
-            translatedTextDiv.innerText = data.text;
+        // 1. Maneja la actualización del texto que viene del servidor (Python)
+        socket.on('update_text', function(msg) {
+            // Esto actualiza el contenido de la caja de texto debajo del video
+            outputElement.value = msg.text;
+            // Opcional: desplazar al final si el texto es muy largo
+            outputElement.scrollTop = outputElement.scrollHeight;
         });
 
-        // --- NUEVA LÓGICA PARA EL BOTÓN ---
-        // Añadir un "event listener" para el clic en el botón
-        clearButton.addEventListener('click', function() {
-            // Cuando se haga clic, emitir el evento 'clear_text' al servidor
-            socket.emit('clear_text');
-            console.log('Señal de borrado enviada al servidor.');
-        });
-        // --- FIN DE LA NUEVA LÓGICA ---
+        // 2. Función llamada por el botón "Borrar Texto"
+        function clearText() {
+            // Envía el evento 'clear_text' al servidor, que a su vez vacía el array.
+            socket.emit('clear_text'); 
+            // Limpia la caja de texto localmente de inmediato para mejor experiencia de usuario
+            outputElement.value = ""; 
+        }
 
+        // Si quieres que el usuario pueda escribir en la caja para editar el texto:
+        // socket.on('connect', function() {
+        //     outputElement.removeAttribute('readonly');
+        // });
     </script>
-
 </body>
 </html>
