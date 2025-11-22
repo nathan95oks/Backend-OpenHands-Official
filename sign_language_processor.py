@@ -7,7 +7,7 @@ from threading import Lock
 from pathlib import Path
 from collections import deque
 import mediapipe as mp
-from flask_socketio import SocketIO # Se añade para que la clase sepa de dónde llamar start_background_task
+from flask_socketio import SocketIO 
 
 # --- DEFINICIONES INTEGRADAS ---
 mp_hands = mp.solutions.hands
@@ -58,10 +58,11 @@ class SignLanguageProcessor:
         
         # --- Carga de Modelos y Componentes ---
         self.clf_static, self.classes_static, self.scaler_static = self._load_onnx_model(self.MODEL_STATIC_PATH)
-        self.clf_seq, self.classes_seq, self.scaler_seq = self._load_onnx_model(self.MODEL_SEQ_PATH)
+        self.clf_seq = None # DESACTIVAR DINÁMICO
         
         # --- Inicialización de MediaPipe ---
-        self.hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.6)
+        # AJUSTE DE DEBUG: Bajar la confianza de detección de MediaPipe
+        self.hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.4) # <--- BAJADO A 0.4
 
         # --- Estado de la Lógica de Reconocimiento ---
         self.buffer = SequenceBuffer()
@@ -72,17 +73,22 @@ class SignLanguageProcessor:
         self.last_hand_seen_time = time.time()
         
         # --- Configuración de Tiempos Solicitados ---
-        self.SPACE_TIMEOUT = 1.0        # Tiempo de pausa para añadir un espacio
-        self.HOLD_TIME = 2.5            # <--- TIEMPO DE CAPTURA (2.5 segundos)
-        self.POST_WRITE_COOLDOWN = 1.0  # Cooldown después de escribir para mostrar "CAPTURA COMPLETA"
+        self.SPACE_TIMEOUT = 1.0        
+        self.HOLD_TIME = 1.5            
+        self.POST_WRITE_COOLDOWN = 1.0  
+        
+        # --- COLA DE EMISIÓN ---
+        self.output_queue = deque(maxlen=1) 
         
         # --- NUEVOS ESTADOS para el Temporizador y el Feedback ---
-        self.stable_prediction = None    # La letra que se ha estado detectando consistentemente
-        self.stable_start_time = None    # El momento en que stable_prediction apareció por primera vez
-        self.last_write_time = 0         # El momento en que se escribió la última letra/espacio
-        self.last_status_is_success = False # Flag para mostrar el texto en verde
+        self.stable_prediction = None    
+        self.stable_start_time = None    
+        self.last_write_time = 0         
+        self.last_status_is_success = False 
+
+        # --- NUEVO ESTADO DE DEBUGGING ---
+        self.frame_saved = False # Flag para guardar solo el primer frame detectado con o sin mano
         
-        # --- Frame para la App Web ---
         self.latest_frame = None
         self.lock = Lock()
 
@@ -103,42 +109,52 @@ class SignLanguageProcessor:
             return None, None, None
 
     def process_frame(self, frame):
-        """Procesa un único frame de la cámara."""
-        frame = cv2.flip(frame, 1)
+        """Procesa un único frame de la cámara. El procesamiento pesado ocurre aquí."""
         
-        # Procesamiento con MediaPipe en todo el fotograma
+        # 1. Voltear horizontalmente (espejo para cámara frontal)
+        frame = cv2.flip(frame, 1) 
+        
+        # 2. PROBAR DIFERENTES ROTACIONES - ELIMINA O CAMBIA ESTA LÍNEA
+        # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)  # <--- COMENTADO
+        
+        # 3. DEBUG: Guardar el PRIMER frame que llega para análisis (sin mano)
+        if not self.frame_saved:
+            debug_path = "debug_frame_raw.jpg"
+            cv2.imwrite(debug_path, frame)
+            print(f"[DEBUG] Frame guardado en {debug_path}. Shape: {frame.shape}")
+            self.frame_saved = True # Se guarda solo una vez
+        
+        # Conversión al espacio de color correcto (BGR a RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # 4. Aumentar confianza de detección temporalmente para debug
         results = self.hands.process(rgb_frame)
         
         hand_detected = bool(results.multi_hand_landmarks)
         predicted_letter = None
+        conf = 0.0 # Inicializar confianza para el log
 
         if hand_detected:
+            print("[DEBUG] ¡MANO DETECTADA! Dibujando landmarks...") 
             mp_drawing.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
             current_feats = landmarks_to_features(results.multi_hand_landmarks[0].landmark)
             
-            if self.prev_feats is not None:
-                score = motion_score(self.prev_feats, current_feats)
-                self.motion_hist.append(score)
-            self.prev_feats = current_feats
-
-            moving = sum(s > 0.15 for s in self.motion_hist) >= 8
-            
-            if moving and self.clf_seq:
-                self.buffer.add(current_feats)
-                if self.buffer.is_ready():
-                    X = self.buffer.get_sequence().reshape(1, -1)
-                    X_scaled = self.scaler_seq.transform(X)
-                    predicted_letter, _ = self._predict_onnx(self.clf_seq, X_scaled, self.classes_seq)
-            elif not moving and self.clf_static:
+            if self.clf_static and current_feats is not None:
                 X = current_feats.reshape(1, -1)
                 X_scaled = self.scaler_static.transform(X)
-                predicted_letter, _ = self._predict_onnx(self.clf_static, X_scaled, self.classes_static)
+                predicted_letter, conf = self._predict_onnx(self.clf_static, X_scaled, self.classes_static)
+                print(f"[DEBUG] Predicción: {predicted_letter}, Confianza: {conf:.2f}")
 
+            # Si hay predicción (conf >= 0.6)
+            if predicted_letter:
+                pass # El log ya se hace arriba
+
+        else:
+             print("[DEBUG] No se detectó ninguna mano.") 
+             
         # La lógica de estado devuelve el texto Y el color
         status_text, text_color = self._update_sentence_logic(hand_detected, predicted_letter)
         
-        # El color es BGR: Amarillo=(255, 255, 0), Verde=(0, 255, 0)
         cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
         
         with self.lock:
@@ -167,28 +183,27 @@ class SignLanguageProcessor:
         return e_x / e_x.sum(axis=0)
 
     def _update_sentence_logic(self, hand_detected, predicted_letter):
-        """Gestiona el estado para añadir letras y espacios - LÓGICA CON CAPTURA DE 2.5s."""
+        """Gestiona el estado para añadir letras y espacios - LÓGICA CON CAPTURA DE 2.0s."""
         current_time = time.time()
         
-        # Colores: Amarillo por defecto
         text_color = (255, 255, 0) 
         
         # 1. Lógica de Cooldown después de la última escritura
         if self.last_status_is_success:
             if (current_time - self.last_write_time) < self.POST_WRITE_COOLDOWN:
-                # Mostrar el mensaje de éxito en VERDE por 1.0s
-                return "¡CAPTURA COMPLETA! Seña agregada.", (0, 255, 0) # Verde
+                return "¡CAPTURA COMPLETA! Seña agregada.", (0, 255, 0)
             else:
-                self.last_status_is_success = False # El cooldown de éxito terminó
+                self.last_status_is_success = False
 
         # 2. Lógica de Mano Detectada y Captura
         if hand_detected and predicted_letter:
             self.last_hand_seen_time = current_time
             
-            # --- MANEJO DE LA ESTABILIDAD (2.5s) ---
+            # --- MANEJO DE LA ESTABILIDAD (HOLD_TIME) ---
             
             # A. Seña diferente o inicio de estabilidad
             if predicted_letter != self.stable_prediction:
+                print(f"[DEBUG] REINICIO ESTABILIDAD: {self.stable_prediction} -> {predicted_letter}") 
                 self.stable_prediction = predicted_letter
                 self.stable_start_time = current_time
                 return f"Capturando: {predicted_letter.upper()}... (0.0s)", text_color
@@ -197,6 +212,7 @@ class SignLanguageProcessor:
             elapsed_stable_time = current_time - self.stable_start_time
             
             if elapsed_stable_time < self.HOLD_TIME:
+                print(f"[DEBUG] ESTABLE: {predicted_letter}. Tiempo: {elapsed_stable_time:.2f}/{self.HOLD_TIME:.2f}") 
                 time_remaining = self.HOLD_TIME - elapsed_stable_time
                 status_text = f"Capturando: {predicted_letter.upper()}... ({time_remaining:.1f}s restantes)"
                 return status_text, text_color
@@ -217,63 +233,57 @@ class SignLanguageProcessor:
                     self.current_sentence.append(letter_to_add)
                     self.last_write_time = current_time
                     self.last_added_letter = letter_to_add
-                    self.last_status_is_success = True # Activar el mensaje de éxito
+                    self.last_status_is_success = True 
                     
-                    # Forzar el re-holding reseteando la predicción estable
                     self.stable_prediction = None 
                     self.stable_start_time = None
                     
-                    self.socketio.start_background_task(
-                        self._emit_update_async, "".join(self.current_sentence)
-                    )
-                    # Devuelve el mensaje de éxito inmediatamente
-                    return "¡CAPTURA COMPLETA! Seña agregada.", (0, 255, 0) # Verde
+                    self._queue_update("".join(self.current_sentence)) # ENVIAR A LA COLA
+                    
+                    return "¡CAPTURA COMPLETA! Seña agregada.", (0, 255, 0)
                 
                 else:
-                    # Seña cumplió el tiempo pero es la misma que la última y no ha habido cooldown/espacio
                     return f"Mantener {predicted_letter.upper()}. Cooldown/Cambio necesario.", text_color
         
-        # 3. Lógica de Mano NO Detectada (o predicción baja)
-        
-        # Resetear el estado de estabilidad
+        # 3. Lógica de Mano NO Detectada
         if not hand_detected:
             self.stable_prediction = None
             self.stable_start_time = None
             
             # Lógica de espacio: Añadir ' ' después de un periodo sin mano
-            if (current_time - self.last_hand_seen_time) > self.SPACE_TIMEOUT:
-                cooldown_ok = (current_time - self.last_write_time) > self.POST_WRITE_COOLDOWN
+            if (time.time() - self.last_hand_seen_time) > self.SPACE_TIMEOUT:
+                cooldown_ok = (time.time() - self.last_write_time) > self.POST_WRITE_COOLDOWN
 
                 if self.current_sentence and self.current_sentence[-1] != ' ' and cooldown_ok:
                     self.current_sentence.append(' ')
                     self.last_added_letter = ' '
-                    self.last_write_time = current_time # Actualizar tiempo de escritura (del espacio)
-                    self.last_status_is_success = False # El espacio no es una "captura de seña"
+                    self.last_write_time = time.time()
+                    self.last_status_is_success = False 
                     
-                    self.socketio.start_background_task(
-                        self._emit_update_async, "".join(self.current_sentence)
-                    )
+                    self._queue_update("".join(self.current_sentence)) # ENVIAR A LA COLA
+
                     return "Espacio añadido. Muestre una seña.", text_color
                 
-                self.last_hand_seen_time = current_time # Resetear el temporizador de espacio
+                self.last_hand_seen_time = time.time()
 
-        # 4. Estado por defecto (No hay mano O mano con baja confianza O tiempo de espacio sin cumplirse)
+        # 4. Estado por defecto
         return "Muestre una seña a la camara.", text_color
 
-    def _emit_update_async(self, text):
-        """Método auxiliar para emitir actualizaciones de SocketIO de forma segura (asíncrona)."""
-        self.socketio.emit('update_text', {'text': text})
+    # --- MÉTODOS DE COLA ---
+    def _queue_update(self, text):
+        """Pone el último estado de la frase en la cola para que el hilo de emisión lo recoja."""
+        if not self.output_queue or self.output_queue[0] != text:
+            print(f"[DEBUG] Mensaje ENCOLADO: {text}") 
+            self.output_queue.append(text)
+
 
     def clear_sentence(self):
         """Limpia la frase actual."""
         self.current_sentence = []
         self.last_added_letter = None
-        self.last_write_time = time.time() # Resetear el cooldown al limpiar
+        self.last_write_time = time.time() 
         self.last_status_is_success = False
         self.stable_prediction = None
         self.stable_start_time = None
-        
-        self.socketio.start_background_task(
-            self._emit_update_async, ""
-        )
+        self._queue_update("") 
         print('[INFO] Texto borrado por el cliente.')
