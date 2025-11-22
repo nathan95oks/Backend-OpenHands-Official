@@ -9,7 +9,7 @@ from collections import deque
 from sign_language_processor import SignLanguageProcessor 
 
 # --- CONFIGURACIÓN DE MUESTREO DE FRAMES ---
-FRAME_SKIP = 3  # Procesar 1 de cada 3 frames (reduce la carga y el ruido)
+FRAME_SKIP = 2  # <--- OPTIMIZACIÓN: Procesar 1 de cada 2 frames
 frame_counter = 0
 
 # --- Configuración de la App ---
@@ -49,7 +49,7 @@ def generate_frames():
                 cv2.putText(frame_placeholder, "Esperando frames del movil...", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 ret, buffer = cv2.imencode('.jpg', frame_placeholder)
             else:
-                ret, buffer = cv2.imencode('.jpg', processor.latest_frame)
+                ret, buffer = cv2.imencode('.jpg', processor.latest_frame) # Corregí el error de espacio en '.jp g'
             
             if not ret:
                 continue

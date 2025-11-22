@@ -61,8 +61,7 @@ class SignLanguageProcessor:
         self.clf_seq = None # DESACTIVAR DINÁMICO
         
         # --- Inicialización de MediaPipe ---
-        # AJUSTE DE DEBUG: Bajar la confianza de detección de MediaPipe
-        self.hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.4) # <--- BAJADO A 0.4
+        self.hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.4) # Confianza baja para debug
 
         # --- Estado de la Lógica de Reconocimiento ---
         self.buffer = SequenceBuffer()
@@ -72,10 +71,10 @@ class SignLanguageProcessor:
         self.last_added_letter = None
         self.last_hand_seen_time = time.time()
         
-        # --- Configuración de Tiempos Solicitados ---
+        # --- Configuración de Tiempos Solicitados (OPTIMIZADOS) ---
         self.SPACE_TIMEOUT = 1.0        
-        self.HOLD_TIME = 1.5            
-        self.POST_WRITE_COOLDOWN = 1.0  
+        self.HOLD_TIME = 1.5            # OPTIMIZACIÓN: Reducido a 1.5s
+        self.POST_WRITE_COOLDOWN = 0.5  # OPTIMIZACIÓN: Reducido a 0.5s
         
         # --- COLA DE EMISIÓN ---
         self.output_queue = deque(maxlen=1) 
@@ -86,8 +85,8 @@ class SignLanguageProcessor:
         self.last_write_time = 0         
         self.last_status_is_success = False 
 
-        # --- NUEVO ESTADO DE DEBUGGING ---
-        self.frame_saved = False # Flag para guardar solo el primer frame detectado con o sin mano
+        # --- ESTADO DE DEBUGGING ---
+        self.frame_saved = False # Flag para guardar solo el primer frame
         
         self.latest_frame = None
         self.lock = Lock()
@@ -109,33 +108,34 @@ class SignLanguageProcessor:
             return None, None, None
 
     def process_frame(self, frame):
-        """Procesa un único frame de la cámara. El procesamiento pesado ocurre aquí."""
+        """Procesa un único frame de la cámara."""
         
-        # 1. Voltear horizontalmente (espejo para cámara frontal)
-        frame = cv2.flip(frame, 1) 
+        # 1. Voltear horizontalmente (COMENTADO PARA CÁMARA TRASERA)
+        # frame = cv2.flip(frame, 1) 
         
-        # 2. PROBAR DIFERENTES ROTACIONES - ELIMINA O CAMBIA ESTA LÍNEA
+        # 2. Rotación (COMENTADO PARA CÁMARA TRASERA PURA)
         # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)  # <--- COMENTADO
         
-        # 3. DEBUG: Guardar el PRIMER frame que llega para análisis (sin mano)
+        # 3. DEBUG: Guardar el PRIMER frame que llega para análisis (Crudo)
         if not self.frame_saved:
             debug_path = "debug_frame_raw.jpg"
             cv2.imwrite(debug_path, frame)
             print(f"[DEBUG] Frame guardado en {debug_path}. Shape: {frame.shape}")
-            self.frame_saved = True # Se guarda solo una vez
+            self.frame_saved = True 
         
         # Conversión al espacio de color correcto (BGR a RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # 4. Aumentar confianza de detección temporalmente para debug
+        # 4. Procesamiento con MediaPipe
         results = self.hands.process(rgb_frame)
         
         hand_detected = bool(results.multi_hand_landmarks)
         predicted_letter = None
-        conf = 0.0 # Inicializar confianza para el log
+        conf = 0.0
 
         if hand_detected:
             print("[DEBUG] ¡MANO DETECTADA! Dibujando landmarks...") 
+            
             mp_drawing.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
             current_feats = landmarks_to_features(results.multi_hand_landmarks[0].landmark)
             
@@ -144,10 +144,6 @@ class SignLanguageProcessor:
                 X_scaled = self.scaler_static.transform(X)
                 predicted_letter, conf = self._predict_onnx(self.clf_static, X_scaled, self.classes_static)
                 print(f"[DEBUG] Predicción: {predicted_letter}, Confianza: {conf:.2f}")
-
-            # Si hay predicción (conf >= 0.6)
-            if predicted_letter:
-                pass # El log ya se hace arriba
 
         else:
              print("[DEBUG] No se detectó ninguna mano.") 
@@ -183,7 +179,7 @@ class SignLanguageProcessor:
         return e_x / e_x.sum(axis=0)
 
     def _update_sentence_logic(self, hand_detected, predicted_letter):
-        """Gestiona el estado para añadir letras y espacios - LÓGICA CON CAPTURA DE 2.0s."""
+        """Gestiona el estado para añadir letras y espacios - LÓGICA CON CAPTURA DE 1.5s."""
         current_time = time.time()
         
         text_color = (255, 255, 0) 
