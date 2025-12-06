@@ -35,6 +35,9 @@ def socket_emitter_thread():
         # Dormimos un momento para no saturar la CPU y permitir otros greenlets
         socketio.sleep(0.05) 
 
+socketio.start_background_task(target=socket_emitter_thread)
+
+
 # --- Rutas de Flask y Eventos de Socket.IO ---
 @app.route('/')
 def index():
@@ -101,7 +104,6 @@ if __name__ == '__main__':
     print("Iniciando el servidor de reconocimiento de señas...")
     
     # Iniciar el hilo de emisión de SocketIO que lee la cola
-    socketio.start_background_task(target=socket_emitter_thread)
     
     # Ejecutar la aplicación web
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
